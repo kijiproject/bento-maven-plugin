@@ -1,0 +1,134 @@
+/**
+ * (c) Copyright 2014 WibiData, Inc.
+ *
+ * See the NOTICE file distributed with this work for additional
+ * information regarding copyright ownership.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.kiji.maven.plugins;
+
+import java.io.File;
+
+import org.apache.maven.plugin.logging.Log;
+
+/**
+ * An in-process way to start and stop a Bento cluster running in a Docker container. This class
+ * wraps commands sent to the bento script in the Bento cluster installation.
+ */
+public class BentoCluster extends MavenLogged {
+  /**
+   * Format for running bento commands: {path/to/bento-cluster/bin/bento} {command} -n {bento-name}.
+   */
+  private static final String BENTO_SHELL_SCRIPT_FORMAT = "%s %s -n %s";
+
+  /**
+   * Bento commands.
+   */
+  private static final String BENTO_CREATE = "create";
+  private static final String BENTO_STOP = "stop";
+  private static final String BENTO_RM = "rm";
+  private static final String BENTO_STATUS = "status";
+  private static final long STARTUP_TIMEOUT_MS = 10000L;
+
+  /** Where on this machine the bento-cluster installation lives. */
+  private File mBentoDirPath;
+
+  /** Name of the Bento cluster container. */
+  private String mBentoName;
+
+  /**
+   * Returns a bento script shell command to execute.
+   *
+   * @param command to run in shell such as create, stop, rm, etc.
+   * @return a formatted string command to execute on the shell.
+   */
+  private String bentoCommand(String command) {
+    return String.format(
+        BENTO_SHELL_SCRIPT_FORMAT,
+        new File(new File(mBentoDirPath, "bin"), "bento").toString(),
+        command,
+        mBentoName
+    );
+  }
+
+  /**
+   * Construct an object to run a Bento cluster container by running shell commands agains the
+   * bento script in the bento-cluster installation.
+   *
+   * @param log The maven log.
+   * @param bentoDirPath path to the bento-cluster environment installation.
+   * @param bentoName name of the Bento cluster container.
+   */
+  public BentoCluster(Log log, File bentoDirPath, String bentoName) {
+    super(log);
+    mBentoDirPath = bentoDirPath;
+    mBentoName = bentoName;
+  }
+
+  /**
+   * Execute command to start the Bento cluster container within a timeout.
+   *
+   * @throws Exception if the Bento cluster container could not be started in the specified timeout.
+   */
+  public void startup() throws Exception {
+    if (isRunning()) {
+      throw new RuntimeException("Cluster already running.");
+    }
+
+    // Start Bento cluster by running the Bento create script.
+    getLog().info(String.format("Starting the Bento cluster '%s'...", mBentoName));
+    getLog().info(ShellExecUtil.executeCommand(bentoCommand(BENTO_CREATE)));
+
+    // Has the container started as expected within the startup timeout?
+    final long startTime = System.currentTimeMillis();
+    while (!isRunning()) {
+      if (System.currentTimeMillis() - startTime > STARTUP_TIMEOUT_MS) {
+        throw new RuntimeException(String.format(
+            "Could not start the Bento cluster '%s' within required timeout %d.",
+            mBentoName,
+            STARTUP_TIMEOUT_MS));
+      }
+    }
+  }
+
+  /**
+   * Execute command to stop the Bento cluster container. Wait uninterruptibly until the shell
+   * command returns.
+   *
+   * @throws Exception if the Bento cluster container could not be stopped.
+   */
+  public void shutdown() throws Exception {
+    if (!isRunning()) {
+      getLog().error(
+          "Attempting to shut down a Bento cluster container, but none running.");
+      return;
+    }
+
+    getLog().info(String.format("Stopping the Bento cluster '%s'...", mBentoName));
+    getLog().info(ShellExecUtil.executeCommand(bentoCommand(BENTO_STOP)));
+    getLog().info(ShellExecUtil.executeCommand(bentoCommand(BENTO_RM)));
+  }
+
+  /**
+   * Check if the Bento cluster container is running, by querying the bento script.
+   *
+   * @return true if the bento script
+   * @throws Exception if the bento script can not be uninterruptibly queried for whether a bento
+   * container is running.
+   */
+  public boolean isRunning() throws Exception {
+    return ShellExecUtil.executeCommand(bentoCommand(BENTO_STATUS)).contains("started");
+  }
+}
